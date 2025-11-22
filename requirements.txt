@@ -1,4 +1,6 @@
 streamlit
-tensorflow-cpu==2.15.0
+torch
+torchvision
 numpy
 Pillow
+scikit-learn

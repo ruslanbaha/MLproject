@@ -1,184 +1,212 @@
 import os
-import shutil
-import numpy as np
-import tensorflow as tf
-import matplotlib.pyplot as plt
+import copy
+import time
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, models, transforms
+from torch.utils.data import DataLoader, random_split
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
-from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import numpy as np
+from tqdm import tqdm  # สำหรับ Progress Bar สวยๆ
 
 # ============================================================
 # 1. CONFIGURATION
 # ============================================================
-# ตรวจสอบ Path ให้ถูกต้อง
-ORIGINAL_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\MLproject\dataset"
-NEW_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\MLproject\dataset_training_copy"
-
+DATA_DIR = r"C:\Users\rutsa\PycharmProjects\MLproject\MLproject\dataset"  # แก้ path ให้ตรง
+MODEL_SAVE_PATH = 'dog_model_pytorch.pth'
 IMG_SIZE = 224
 BATCH_SIZE = 32
-EPOCHS = 20  # เพิ่มรอบการเรียนรู้เล็กน้อยเพื่อความแม่นยำ
+EPOCHS = 10
+LEARNING_RATE = 0.001
+
+# ตรวจสอบ GPU
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"🚀 Using device: {device}")
+if device.type == 'cuda':
+    print(f"🔥 GPU: {torch.cuda.get_device_name(0)}")
+
+# ============================================================
+# 2. DATA PREPARATION (Transforms)
+# ============================================================
+# PyTorch ต้องการ Normalization ตามมาตรฐาน ImageNet
+data_transforms = {
+    'train': transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomRotation(15),
+        transforms.ColorJitter(brightness=0.1, contrast=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+    'val': transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.ToTensor(),
+        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ]),
+}
 
 
 # ============================================================
-# 2. DATASET PREPARATION
+# 3. LOAD DATASET
 # ============================================================
-def build_dataset(files, labels, shuffle=False):
-    ds = tf.data.Dataset.from_tensor_slices((files, labels))
+def load_data():
+    full_dataset = datasets.ImageFolder(DATA_DIR, transform=data_transforms['train'])
+    class_names = full_dataset.classes
+    print(f"✅ Classes Found: {class_names}")  # ควรเป็น ['ai', 'real']
 
-    def load_img(path, label):
-        img = tf.io.read_file(path)
-        img = tf.image.decode_jpeg(img, channels=3)
-        img = tf.image.resize(img, (IMG_SIZE, IMG_SIZE))
+    # Split Data (Train 70%, Val 15%, Test 15%)
+    total_size = len(full_dataset)
+    train_size = int(0.7 * total_size)
+    val_size = int(0.15 * total_size)
+    test_size = total_size - train_size - val_size
 
-        # --- CRITICAL CONFIG ---
-        # EfficientNetB0 ต้องการค่าสี 0-255 (float32)
-        # ห้ามหาร 255.0 เด็ดขาดสำหรับโมเดลนี้
-        img = tf.cast(img, tf.float32)
-        return img, label
+    train_dataset, val_dataset, test_dataset = random_split(
+        full_dataset, [train_size, val_size, test_size],
+        generator=torch.Generator().manual_seed(42)
+    )
 
-    ds = ds.map(load_img, num_parallel_calls=tf.data.AUTOTUNE)
+    # Apply 'val' transform to val/test datasets (เพื่อไม่ให้มี Data Augmentation ตอนเทส)
+    val_dataset.dataset.transform = data_transforms['val']
+    test_dataset.dataset.transform = data_transforms['val']
 
-    if shuffle:
-        ds = ds.shuffle(1000)
+    dataloaders = {
+        'train': DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4),
+        # num_workers ปรับตาม CPU cores
+        'val': DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4),
+        'test': DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4)
+    }
 
-    ds = ds.batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
-    return ds
+    return dataloaders, class_names, len(train_dataset), len(val_dataset)
 
 
 # ============================================================
-# 3. MAIN EXECUTION
+# 4. TRAINING FUNCTION
 # ============================================================
-if __name__ == "__main__":
-    print("🚀 Starting Training Process (Binary: Real vs AI)...")
+def train_model(model, criterion, optimizer, num_epochs=25):
+    since = time.time()
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
 
-    # Setup GPU
-    gpus = tf.config.experimental.list_physical_devices('GPU')
-    for gpu in gpus:
-        tf.config.experimental.set_memory_growth(gpu, True)
+    history = {'train_acc': [], 'val_acc': [], 'train_loss': [], 'val_loss': []}
 
-    # Copy Dataset Safety
-    if not os.path.exists(ORIGINAL_PATH):
-        print(f"❌ Error: ไม่พบโฟลเดอร์ {ORIGINAL_PATH}")
-        exit()
+    for epoch in range(num_epochs):
+        print(f'\nEpoch {epoch + 1}/{num_epochs}')
+        print('-' * 10)
 
-    if not os.path.exists(NEW_PATH):
-        print("📂 Creating dataset backup...")
-        shutil.copytree(ORIGINAL_PATH, NEW_PATH)
-    else:
-        print("📂 Using existing dataset backup.")
+        for phase in ['train', 'val']:
+            if phase == 'train':
+                model.train()
+            else:
+                model.eval()
 
-    dataset_path = NEW_PATH
+            running_loss = 0.0
+            running_corrects = 0
 
-    # Load Classes (Expected: ['ai', 'real'])
+            # Iterate over data (with Progress Bar)
+            for inputs, labels in tqdm(dataloaders[phase], desc=f"{phase} phase"):
+                inputs = inputs.to(device)
+                labels = labels.to(device).float().unsqueeze(1)  # แปลง label เป็น shape [batch, 1]
+
+                optimizer.zero_grad()
+
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    # outputs เป็น Logits ต้องผ่าน Sigmoid ถ้าจะดูค่าจริง แต่ BCEWithLogitsLoss รับ Logits ได้เลย
+                    loss = criterion(outputs, labels)
+                    preds = (torch.sigmoid(outputs) > 0.5).float()
+
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+
+            if phase == 'train':
+                history['train_loss'].append(epoch_loss)
+                history['train_acc'].append(epoch_acc.item())
+            else:
+                history['val_loss'].append(epoch_loss)
+                history['val_acc'].append(epoch_acc.item())
+
+            # Deep copy the model
+            if phase == 'val' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+                best_model_wts = copy.deepcopy(model.state_dict())
+                print(f"🌟 New Best Validation Accuracy: {best_acc:.4f}")
+
+    time_elapsed = time.time() - since
+    print(f'\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val Acc: {best_acc:4f}')
+
+    model.load_state_dict(best_model_wts)
+    return model, history
+
+
+# ============================================================
+# 5. MAIN EXECUTION
+# ============================================================
+if __name__ == '__main__':
+    # 1. Load Data
     try:
-        classes = sorted([d for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))])
-    except:
-        print("❌ Error reading dataset")
+        dataloaders, class_names, train_size, val_size = load_data()
+        dataset_sizes = {'train': train_size, 'val': val_size}
+    except Exception as e:
+        print(f"❌ Error loading data: {e}")
         exit()
 
-    print(f"✅ Classes Found: {classes}")
-    if len(classes) != 2:
-        print("⚠️ Warning: แนะนำให้มีแค่ 2 โฟลเดอร์ ('ai', 'real') เพื่อความแม่นยำสูงสุด")
+    # 2. Setup Model (EfficientNet B0)
+    print("🛠️  Building EfficientNet B0 Model...")
+    model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
 
-    # Load Image Paths
-    file_paths = []
-    labels = []
+    # Freeze weights (Optional: ถ้าข้อมูลน้อยให้ Freeze ไว้ก่อน)
+    for param in model.features.parameters():
+        param.requires_grad = False
 
-    for label_idx, cls_name in enumerate(classes):
-        cls_dir = os.path.join(dataset_path, cls_name)
-        images = [os.path.join(cls_dir, f) for f in os.listdir(cls_dir)
-                  if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
-        file_paths.extend(images)
-        labels.extend([label_idx] * len(images))
+        # แก้ไข Output Layer สำหรับ Binary Classification (1 node)
+    # EfficientNet B0 output สุดท้ายอยู่ที่ classifier[1]
+    num_ftrs = model.classifier[1].in_features
+    model.classifier[1] = nn.Linear(num_ftrs, 1)
 
-    file_paths = np.array(file_paths)
-    labels = np.array(labels)
-    print(f"📸 Total images: {len(file_paths)}")
+    model = model.to(device)
 
-    if len(file_paths) == 0:
-        print("❌ No images found!")
-        exit()
+    # 3. Loss & Optimizer
+    criterion = nn.BCEWithLogitsLoss()  # เหมาะกับ Binary Classification มากกว่า MSE
+    optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-    # Split Data (70% Train, 15% Val, 15% Test)
-    train_files, temp_files, train_labels, temp_labels = train_test_split(
-        file_paths, labels, test_size=0.30, stratify=labels, random_state=42
-    )
-    val_files, test_files, val_labels, test_labels = train_test_split(
-        temp_files, temp_labels, test_size=0.50, stratify=temp_labels, random_state=42
-    )
+    # 4. Train
+    model, history = train_model(model, criterion, optimizer, num_epochs=EPOCHS)
 
-    print(f"📊 Split Stats: Train={len(train_files)}, Val={len(val_files)}, Test={len(test_files)}")
-
-    # Build TF Datasets
-    train_ds = build_dataset(train_files, train_labels, shuffle=True)
-    val_ds = build_dataset(val_files, val_labels)
-    test_ds = build_dataset(test_files, test_labels)
-
-    # Data Augmentation (เพิ่มความหลากหลายให้ภาพ)
-    data_aug = tf.keras.Sequential([
-        tf.keras.layers.RandomFlip("horizontal"),
-        tf.keras.layers.RandomRotation(0.15),
-        tf.keras.layers.RandomBrightness(0.1),
-        tf.keras.layers.RandomZoom(0.1),
-        tf.keras.layers.RandomContrast(0.1),
-    ])
-
-    # Model Architecture (EfficientNetB0)
-    base_model = tf.keras.applications.EfficientNetB0(
-        include_top=False,
-        input_shape=(IMG_SIZE, IMG_SIZE, 3),
-        weights="imagenet"
-    )
-    base_model.trainable = False  # Freeze pretrained weights
-
-    inputs = tf.keras.Input(shape=(IMG_SIZE, IMG_SIZE, 3))
-    x = data_aug(inputs)
-    x = base_model(x, training=False)
-    x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dropout(0.3)(x)
-
-    # Output Layer (1 Node for Binary Classification: 0=AI, 1=Real)
-    outputs = tf.keras.layers.Dense(1, activation="sigmoid")(x)
-
-    model = tf.keras.Model(inputs, outputs)
-
-    model.compile(
-        optimizer=tf.keras.optimizers.Adam(1e-3),
-        loss="binary_crossentropy",
-        metrics=["accuracy"]
-    )
-
-    model.summary()
-
-    # Training
-    print("🏋️ Starting Training...")
-    history = model.fit(train_ds, validation_data=val_ds, epochs=EPOCHS)
-
-    # Evaluation
-    print("📝 Evaluating Model...")
-    loss, acc = model.evaluate(test_ds)
-    print(f"🏆 Test Accuracy: {acc * 100:.2f}%")
-
-    # Save Model
-    save_path = 'dog_model_binary.keras'
-    print(f"💾 Saving model to {save_path}...")
-    model.save(save_path)
+    # 5. Save Model
+    print(f"💾 Saving model to {MODEL_SAVE_PATH}...")
+    torch.save(model, MODEL_SAVE_PATH)  # เซฟทั้งโมเดล (Structure + Weights)
     print("✅ Model saved successfully!")
 
-    # Confusion Matrix
+    # 6. Evaluation on Test Set & Confusion Matrix
+    print("\n📝 Evaluating on Test Set...")
+    model.eval()
     y_true = []
     y_pred = []
-    print("📊 Generating Confusion Matrix...")
 
-    for images, lbls in test_ds:
-        preds = model.predict(images, verbose=0)
-        preds = (preds > 0.5).astype(int).flatten()
-        y_true.extend(lbls.numpy())
-        y_pred.extend(preds)
+    with torch.no_grad():
+        for inputs, labels in dataloaders['test']:
+            inputs = inputs.to(device)
+            outputs = model(inputs)
+            preds = (torch.sigmoid(outputs) > 0.5).int().cpu().numpy().flatten()
+            y_true.extend(labels.numpy())
+            y_pred.extend(preds)
 
     cm = confusion_matrix(y_true, y_pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=classes)
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
 
     plt.figure(figsize=(6, 6))
     disp.plot(cmap="Blues", ax=plt.gca())
-    plt.title(f"Confusion Matrix (Acc: {acc * 100:.2f}%)")
+    plt.title("Confusion Matrix (PyTorch)")
     plt.show()
