@@ -10,8 +10,8 @@ from sklearn.model_selection import train_test_split
 # 1. CONFIGURATION
 # ============================================================
 # ตรวจสอบ Path ให้ถูกต้อง
-ORIGINAL_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\dataset"
-NEW_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\dataset_training_copy"
+ORIGINAL_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\MLproject\dataset"
+NEW_PATH = r"C:\Users\rutsa\PycharmProjects\MLproject\MLproject\dataset_training_copy"
 
 IMG_SIZE = 224
 BATCH_SIZE = 32
