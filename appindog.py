@@ -15,7 +15,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# ... (CSS เดิมใช้ได้เลยครับ ไม่ต้องแก้) ...
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap');
@@ -42,6 +41,20 @@ st.markdown("""
         border-radius: 10px; margin-bottom: 20px;
     }
     .stFileUploader { border: 2px dashed #bdc3c7; border-radius: 15px; padding: 20px; }
+
+    /* Custom Button Styles for Finished State */
+    .success-box {
+        background-color: #d4edda;
+        color: #155724;
+        border: 1px solid #c3e6cb;
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+        font-weight: 600;
+        font-size: 1.1rem;
+        margin-top: 10px;
+        margin-bottom: 20px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -50,40 +63,34 @@ translations = {
         "title": "🐕 DogDetect AI",
         "subtitle": "ตรวจจับภาพน้องหมาว่าเป็น 'ภาพ AI' หรือไม่ (PyTorch Version)",
         "upload_label": "อัปโหลดภาพน้องหมา (Drag & Drop)",
-        "analyzing": "กำลังประมวลผล...",
+        "btn_start": "ประมวลผล",
+        "processing": "กำลังประมวลผล...",
+        "btn_done": "✅ ประมวลผลเสร็จสิ้น",
         "result_title": "ผลการวิเคราะห์ AI",
         "ai_prob": "ความเป็น AI",
         "type": "ประเภท",
         "type_ai": "🤖 ภาพจาก AI (Generated)",
         "type_real": "📸 ภาพถ่ายจริง (Real Photo)",
-        "share": "แชร์ผลลัพธ์",
         "cookie_text": "🍪 เว็บไซต์นี้ใช้คุกกี้เพื่อพัฒนาโมเดล AI",
         "accept": "ยอมรับ",
         "decline": "ไม่ยอมรับ",
-        "sensitive_title": "⚠️ แจ้งเตือนภาพละเอียดอ่อน",
-        "sensitive_msg": "ตรวจพบเนื้อหาละเอียดอ่อน ยืนยันที่จะทำต่อ?",
-        "btn_continue": "ยืนยัน / ทำต่อ",
-        "btn_cancel": "ยกเลิก",
         "error_model": "❌ ไม่พบไฟล์โมเดล (.pth) หรือไฟล์เสียหาย"
     },
     "en": {
         "title": "🐕 DogDetect AI",
         "subtitle": "Detect if a dog image is 'AI Generated' or Real (PyTorch)",
         "upload_label": "Upload Dog Image",
-        "analyzing": "Processing...",
+        "btn_start": "Analyze",
+        "processing": "Processing...",
+        "btn_done": "✅ Analysis Complete",
         "result_title": "AI Analysis Result",
         "ai_prob": "AI Probability",
         "type": "Type",
         "type_ai": "🤖 AI Generated",
         "type_real": "📸 Real Photo",
-        "share": "Share Result",
         "cookie_text": "🍪 Cookies used.",
         "accept": "Accept",
         "decline": "Decline",
-        "sensitive_title": "⚠️ Sensitive Warning",
-        "sensitive_msg": "Proceed with sensitive content?",
-        "btn_continue": "Confirm",
-        "btn_cancel": "Cancel",
         "error_model": "❌ Model file (.pth) not found."
     }
 }
@@ -94,59 +101,42 @@ translations = {
 # ==========================================
 @st.cache_resource
 def load_pytorch_model():
-    # 1. ประกาศตัวแปร model_path ให้ถูกต้องภายในฟังก์ชัน
     current_dir = os.path.dirname(os.path.abspath(__file__))
     model_path = os.path.join(current_dir, 'dog_model_pytorch.pth')
 
-    # 2. เช็คว่าไฟล์มีไหม
     if not os.path.exists(model_path):
         return None, f"File not found at: {model_path}"
 
     try:
-        # 3. โหลดโมเดล (ใส่ weights_only=False ตรงนี้)
-        # map_location='cpu' เพื่อให้รันได้แม้ไม่มี GPU
         model = torch.load(model_path, map_location=torch.device('cpu'), weights_only=False)
-        model.eval()  # ปรับเป็น mode ประมวลผล
+        model.eval()
         return model, None
     except Exception as e:
         return None, str(e)
 
 
 def predict_image(model, image):
-    # Preprocess ให้เหมือนตอนเทรนเป๊ะๆ
     preprocess = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
     ])
 
-    # แปลงภาพ
     img_tensor = preprocess(image)
-    img_tensor = img_tensor.unsqueeze(0)  # เพิ่ม Batch dimension (1, 3, 224, 224)
+    img_tensor = img_tensor.unsqueeze(0)
 
-    # Predict
     with torch.no_grad():
         output = model(img_tensor)
-        prob = torch.sigmoid(output).item()  # แปลง Logits เป็น Probability (0-1)
-
-    # Logic:
-    # ตอนเทรน Class 0 = ai, Class 1 = real (เพราะมันเรียงตามตัวอักษร)
-    # ถ้า prob < 0.5 คือค่อนไปทาง AI
-    # ถ้า prob > 0.5 คือค่อนไปทาง Real
+        prob = torch.sigmoid(output).item()
 
     if prob < 0.5:
         is_ai = True
         ai_percent = (1 - prob) * 100
     else:
         is_ai = False
-        ai_percent = (1 - prob) * 100  # ถ้าเป็น Real ก็โชว์เปอร์เซ็นต์ AI น้อยๆ (หรือจะโชว์ Real % ก็ได้แล้วแต่ดีไซน์)
+        ai_percent = (1 - prob) * 100
 
     return is_ai, ai_percent
-
-
-def check_sensitive_content(image):
-    import random
-    return random.random() > 0.7
 
 
 # ==========================================
@@ -154,7 +144,12 @@ def check_sensitive_content(image):
 # ==========================================
 if 'lang' not in st.session_state: st.session_state.lang = 'th'
 if 'cookie_consent' not in st.session_state: st.session_state.cookie_consent = None
-if 'sensitive_confirmed' not in st.session_state: st.session_state.sensitive_confirmed = False
+
+# State สำหรับเก็บสถานะการประมวลผล
+if 'analysis_done' not in st.session_state: st.session_state.analysis_done = False
+if 'result_is_ai' not in st.session_state: st.session_state.result_is_ai = None
+if 'result_percent' not in st.session_state: st.session_state.result_percent = None
+if 'last_uploaded_file' not in st.session_state: st.session_state.last_uploaded_file = None
 
 t = translations[st.session_state.lang]
 
@@ -183,32 +178,47 @@ if model is None:
     if error: st.warning(f"Error Detail: {error}")
 else:
     uploaded_file = st.file_uploader(t['upload_label'], type=['jpg', 'png', 'jpeg'])
+
     if uploaded_file:
-        image = Image.open(uploaded_file).convert('RGB')  # บังคับแปลงเป็น RGB กัน Error
+        # เช็คว่าไฟล์เปลี่ยนหรือไม่ หากเปลี่ยนให้รีเซ็ตผลลัพธ์และปุ่ม
+        if st.session_state.last_uploaded_file != uploaded_file.name:
+            st.session_state.last_uploaded_file = uploaded_file.name
+            st.session_state.analysis_done = False
+            st.session_state.result_is_ai = None
+            st.session_state.result_percent = None
+
+        image = Image.open(uploaded_file).convert('RGB')
         st.image(image, caption="Preview", use_container_width=True)
 
-        # Sensitive check logic (เหมือนเดิม)
-        if 'last_uploaded' not in st.session_state or st.session_state.last_uploaded != uploaded_file.name:
-            st.session_state.is_sensitive = check_sensitive_content(image)
-            st.session_state.last_uploaded = uploaded_file.name
-            st.session_state.sensitive_confirmed = False
+        # Logic การแสดงปุ่ม
+        if not st.session_state.analysis_done:
+            # ปุ่มประมวลผล (Start)
+            if st.button(f"⚡ {t['btn_start']}", type="primary", use_container_width=True):
+                # 1. แสดง Progress bar
+                progress_text = t['processing']
+                my_bar = st.progress(0, text=progress_text)
 
-        if st.session_state.is_sensitive and not st.session_state.sensitive_confirmed:
-            st.warning(f"**{t['sensitive_title']}**")
-            st.write(t['sensitive_msg'])
-            c1, c2 = st.columns(2)
-            if c1.button(t['btn_continue'], type="primary"): st.session_state.sensitive_confirmed = True; st.rerun()
-            if c2.button(t['btn_cancel']): st.session_state.last_uploaded = None; st.rerun()
-            st.stop()
+                for i in range(100):
+                    time.sleep(0.01)
+                    my_bar.progress(i + 1)
 
-        if st.button("🚀 " + t['analyzing'].replace("...", ""), type="primary", use_container_width=True):
-            my_bar = st.progress(0, text=t['analyzing'])
-            for i in range(100):
-                time.sleep(0.01)
-                my_bar.progress(i + 1)
+                # 2. ประมวลผล
+                is_ai, ai_percent = predict_image(model, image)
 
-            is_ai, ai_percent = predict_image(model, image)
-            my_bar.empty()
+                # 3. เก็บค่าลง Session State
+                st.session_state.result_is_ai = is_ai
+                st.session_state.result_percent = ai_percent
+                st.session_state.analysis_done = True
+
+                my_bar.empty()
+                st.rerun()  # รีเฟรชหน้าเพื่อเปลี่ยนปุ่มเป็นสีเขียว
+        else:
+            # ปุ่มสีเขียว (Finished) - ใช้ HTML/CSS สร้างกล่องข้อความแทนปุ่ม disabled
+            st.markdown(f"""<div class="success-box">{t['btn_done']}</div>""", unsafe_allow_html=True)
+
+            # แสดงผลลัพธ์ (ดึงจาก Session State)
+            is_ai = st.session_state.result_is_ai
+            ai_percent = st.session_state.result_percent
 
             st.markdown("---")
             st.markdown(f"<h3 style='text-align: center;'>{t['result_title']}</h3>", unsafe_allow_html=True)
@@ -227,5 +237,3 @@ else:
                 st.markdown(
                     f"""<div class="result-card"><div style="color:#7f8c8d;">{t['ai_prob']}</div><div class="score-big" style="background:-webkit-linear-gradient(45deg,#2c3e50,{score_color});-webkit-background-clip:text;-webkit-text-fill-color:transparent;">{ai_percent:.1f}%</div></div>""",
                     unsafe_allow_html=True)
-
-            # Share buttons... (เหมือนเดิม)
