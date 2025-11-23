@@ -58,10 +58,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# --- แก้ไขข้อความ Subtitle ตรงนี้ครับ ---
 translations = {
     "th": {
         "title": "🐕 DogDetect AI",
-        "subtitle": "ตรวจจับภาพน้องหมาว่าเป็น 'ภาพ AI' หรือไม่ (PyTorch Version)",
+        "subtitle": "ตรวจจับภาพน้องหมาว่าเป็น 'ภาพ AI'",  # ลบข้อความส่วนเกินออกแล้ว
         "upload_label": "อัปโหลดภาพน้องหมา (Drag & Drop)",
         "btn_start": "ประมวลผล",
         "processing": "กำลังประมวลผล...",
@@ -78,7 +79,7 @@ translations = {
     },
     "en": {
         "title": "🐕 DogDetect AI",
-        "subtitle": "Detect if a dog image is 'AI Generated' or Real (PyTorch)",
+        "subtitle": "Detect if a dog image is 'AI Generated'",  # ปรับให้สั้นกระชับเช่นกัน
         "upload_label": "Upload Dog Image",
         "btn_start": "Analyze",
         "processing": "Processing...",
@@ -142,28 +143,36 @@ def predict_image(model, image):
 # ==========================================
 # 3. MAIN APP FLOW
 # ==========================================
+# 1. Init State
 if 'lang' not in st.session_state: st.session_state.lang = 'th'
 if 'cookie_consent' not in st.session_state: st.session_state.cookie_consent = None
-
-# State สำหรับเก็บสถานะการประมวลผล
 if 'analysis_done' not in st.session_state: st.session_state.analysis_done = False
 if 'result_is_ai' not in st.session_state: st.session_state.result_is_ai = None
 if 'result_percent' not in st.session_state: st.session_state.result_percent = None
 if 'last_uploaded_file' not in st.session_state: st.session_state.last_uploaded_file = None
 
+# 2. Sidebar & Language Logic (ย้ายมาไว้ตรงนี้เพื่อให้เปลี่ยนภาษาทันที)
+with st.sidebar:
+    st.header("Settings ⚙️")
+    # หา Index ปัจจุบันเพื่อให้ Radio Button แสดงถูกต้อง
+    current_index = 0 if st.session_state.lang == 'th' else 1
+    lang_choice = st.radio("Language / ภาษา", ["ภาษาไทย", "English"], index=current_index)
+
+    # แปลงค่าที่เลือกกลับเป็นรหัสภาษา
+    selected_lang_code = 'th' if lang_choice == "ภาษาไทย" else 'en'
+
+    # ถ้าค่าเปลี่ยน ให้ update state และ rerun ทันที
+    if selected_lang_code != st.session_state.lang:
+        st.session_state.lang = selected_lang_code
+        st.rerun()
+
+# 3. Load Text Dictionary (ดึงหลังจากจัดการภาษาเสร็จแล้ว)
 t = translations[st.session_state.lang]
 
 # Load Model
 model, error = load_pytorch_model()
 
-# Sidebar
-with st.sidebar:
-    st.header("Settings ⚙️")
-    lang_choice = st.radio("Language / ภาษา", ["ภาษาไทย", "English"])
-    st.session_state.lang = 'en' if lang_choice == "English" else 'th'
-    if lang_choice != ("ภาษาไทย" if st.session_state.lang == 'th' else "English"): st.rerun()
-
-# Cookie
+# Cookie Banner
 if st.session_state.cookie_consent is None:
     with st.container():
         st.markdown(f"""<div class="cookie-box"><div>{t['cookie_text']}</div></div>""", unsafe_allow_html=True)
@@ -171,6 +180,7 @@ if st.session_state.cookie_consent is None:
         if c2.button(t['accept']): st.session_state.cookie_consent = True; st.rerun()
         if c3.button(t['decline']): st.session_state.cookie_consent = False; st.rerun()
 
+# Main Header
 st.markdown(f"""<div class="main-header"><h1>{t['title']}</h1><p>{t['subtitle']}</p></div>""", unsafe_allow_html=True)
 
 if model is None:
@@ -213,10 +223,10 @@ else:
                 my_bar.empty()
                 st.rerun()  # รีเฟรชหน้าเพื่อเปลี่ยนปุ่มเป็นสีเขียว
         else:
-            # ปุ่มสีเขียว (Finished) - ใช้ HTML/CSS สร้างกล่องข้อความแทนปุ่ม disabled
+            # ปุ่มสีเขียว (Finished)
             st.markdown(f"""<div class="success-box">{t['btn_done']}</div>""", unsafe_allow_html=True)
 
-            # แสดงผลลัพธ์ (ดึงจาก Session State)
+            # แสดงผลลัพธ์
             is_ai = st.session_state.result_is_ai
             ai_percent = st.session_state.result_percent
 
